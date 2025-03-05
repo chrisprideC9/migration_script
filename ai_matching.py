@@ -1,109 +1,124 @@
-import streamlit as st
-import pandas as pd
+# ai_matching.py
+
 import os
 import openai
+import streamlit as st
+import pandas as pd
+from rapidfuzz import process, fuzz
 
-def suggest_redirect( url_404, site_urls, model="gpt-3.5-turbo" ):
+# If you haven't already set the API key in main.py or elsewhere:
+# openai.api_key = os.getenv("OPENAI_API_KEY")
+
+def perform_ai_matching(unmatched_df, new_df, model="gpt-3.5-turbo", max_new_urls=50):
     """
-    Sends a single ChatCompletion request to GPT with:
-    - A system message about what the assistant does
-    - A user message that includes the 404 URL and the entire site URL list
-    Returns GPT's chosen redirect as a string.
+    Uses OpenAI's API to pick the best matching new URL for each unmatched old URL.
+    
+    Arguments:
+      - unmatched_df : DataFrame of unmatched old URLs with columns like:
+            ['Address_old','Title_old','Meta Description_old','H1_old', ...]
+      - new_df       : DataFrame of new URLs (['Address_new','H1', 'Title', etc.])
+      - model        : The OpenAI model to use (e.g., 'gpt-3.5-turbo' or 'gpt-4').
+      - max_new_urls : Maximum # of new URLs to pass in a single prompt (for token/cost control).
+    
+    Returns:
+      A DataFrame of AI-based matches with columns:
+        ['Address_old','Address_new','Match_Type','Confidence_Score','Title_old','Meta Description_old','H1_old']
     """
-    system_prompt = (
-        "You are an expert at mapping 404 URLs to the best available redirect. "
-        "You will be given a 404 URL and a list of possible site URLs. "
-        "Your job is to pick the SINGLE site URL from the list that best matches "
-        "the intent or content of the 404 URL."
-    )
-    
-    # The user prompt includes the 404 URL and the entire site list
-    user_prompt = (
-        f"404 URL: {url_404}\n\n"
-        f"Here is the list of valid site URLs:\n"
-        + "\n".join(site_urls) +
-        "\n\nPlease return ONLY the single best matching URL from the above list. "
-        "No extra explanation."
-    )
-    
-    try:
-        response = openai.ChatCompletion.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.0  # lower temperature for more deterministic output
-        )
-        best_redirect = response["choices"][0]["message"]["content"].strip()
-        return best_redirect
-    except Exception as e:
-        st.warning(f"OpenAI API error for 404 URL '{url_404}': {str(e)}")
-        return ""
+    if unmatched_df.empty:
+        return pd.DataFrame()
+    if new_df.empty:
+        return pd.DataFrame()
 
-def main():
-    st.title("404 Redirect Suggester (Context-Only via GPT)")
-    st.write("""
-        This app uses OpenAI's ChatCompletion endpoint (**no embeddings**) 
-        to find a suitable redirect for each 404 URL by providing GPT 
-        with the entire list of site URLs each time.
-        
-        **Warning**: This can be very token-intensive if you have a large site URL list. 
-        For smaller lists, it's fine.
-    """)
+    ai_matches = []
+    # Possibly chunk or limit new_df if large:
+    all_new_candidates = new_df[['Address_new','H1']].values.tolist()
+    limited_new_candidates = all_new_candidates[:max_new_urls]
 
-    # Make sure your API key is in the environment
-    if "OPENAI_API_KEY" not in os.environ:
-        st.error("No OPENAI_API_KEY found in environment. Please set it before running.")
-        st.stop()
-    
-    openai.api_key = os.environ["OPENAI_API_KEY"]
-    
-    # File Uploaders
-    file_404 = st.file_uploader("Upload CSV with 404 URLs (one column)", type=["csv"])
-    file_site = st.file_uploader("Upload CSV with Site URLs (one column)", type=["csv"])
-    
-    if file_404 and file_site:
-        df_404 = pd.read_csv(file_404)
-        df_site = pd.read_csv(file_site)
-        
-        # Basic validation
-        if df_404.shape[1] < 1 or df_site.shape[1] < 1:
-            st.error("Each CSV must have at least one column of URLs.")
-            return
-        
-        st.write("**404 URLs (preview):**")
-        st.dataframe(df_404.head())
-        st.write("**Site URLs (preview):**")
-        st.dataframe(df_site.head())
-        
-        model = st.selectbox("Choose model", ["gpt-3.5-turbo", "gpt-4"])
-        
-        if st.button("Find Redirects"):
-            site_urls = df_site.iloc[:,0].dropna().tolist()
-            results = []
-            
-            with st.spinner("Asking GPT for each 404 URL..."):
-                for _, row in df_404.iterrows():
-                    url_404 = str(row.iloc[0])
-                    best_redirect = suggest_redirect(url_404, site_urls, model=model)
-                    results.append({
-                        "404_URL": url_404,
-                        "Suggested_Redirect": best_redirect
-                    })
-            
-            results_df = pd.DataFrame(results)
-            st.success("Done! Here are the suggestions:")
-            st.dataframe(results_df)
-            
-            # Download button
-            csv_data = results_df.to_csv(index=False)
-            st.download_button(
-                label="Download CSV",
-                data=csv_data,
-                file_name="redirect_suggestions.csv",
-                mime="text/csv"
+    for _, row in unmatched_df.iterrows():
+        old_url = row['Address_old']
+        old_title = row.get('Title_old', '')
+        old_desc = row.get('Meta Description_old', '')
+        old_h1   = row.get('H1_old', '')
+
+        # Build prompt
+        prompt = f"""
+I have an old URL that needs a redirect. Here is its context:
+
+- Old URL: {old_url}
+- Title: {old_title}
+- Meta Description: {old_desc}
+- H1: {old_h1}
+
+I have these potential new URLs to choose from:
+"""
+        for candidate in limited_new_candidates:
+            new_url = candidate[0]
+            new_h1  = candidate[1]
+            prompt += f"\n- {new_url} | H1: {new_h1}"
+
+        prompt += """
+Please pick **one** best matching new URL from the list above, based on
+semantic relevance and content. Give me the URL only, not an explanation.
+If none match, say "NONE".
+"""
+
+        try:
+            # NEW SYNTAX for openai>=1.0.0
+            response = openai.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are an assistant that helps match old and new URLs for SEO."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.0,
             )
+            # Also note the new way to grab the text:
+            best_match_url = response.choices[0].message.content.strip()
 
-if __name__ == "__main__":
-    main()
+            if best_match_url.upper() == "NONE":
+                ai_matches.append({
+                    'Address_old': old_url,
+                    'Address_new': 'NOT FOUND (AI)',
+                    'Match_Type': 'AI Match',
+                    'Confidence_Score': 0,
+                    'Title_old': old_title,
+                    'Meta Description_old': old_desc,
+                    'H1_old': old_h1
+                })
+            else:
+                # Optionally verify the returned URL is in new_df
+                candidate_check = new_df[new_df['Address_new'].str.lower() == best_match_url.lower()]
+                if not candidate_check.empty:
+                    ai_matches.append({
+                        'Address_old': old_url,
+                        'Address_new': best_match_url,
+                        'Match_Type': 'AI Match',
+                        'Confidence_Score': 70,
+                        'Title_old': old_title,
+                        'Meta Description_old': old_desc,
+                        'H1_old': old_h1
+                    })
+                else:
+                    ai_matches.append({
+                        'Address_old': old_url,
+                        'Address_new': best_match_url + " (AI Not Verified)",
+                        'Match_Type': 'AI Match',
+                        'Confidence_Score': 50,
+                        'Title_old': old_title,
+                        'Meta Description_old': old_desc,
+                        'H1_old': old_h1
+                    })
+
+        except Exception as e:
+            st.warning(f"OpenAI API error for URL: {old_url}\n{e}")
+            ai_matches.append({
+                'Address_old': old_url,
+                'Address_new': 'NOT FOUND (API Error)',
+                'Match_Type': 'AI Match',
+                'Confidence_Score': 0,
+                'Title_old': old_title,
+                'Meta Description_old': old_desc,
+                'H1_old': old_h1
+            })
+
+    return pd.DataFrame(ai_matches)
