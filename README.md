@@ -25,7 +25,7 @@ A Streamlit-based tool to assist in matching URLs for website migration by using
 
 1. Clone this repository:
    ```
-   git clone https://github.com/chrisprideC9/url-matching-tool.git
+   git clone https://github.com/chrisprideC9/migration_script
    cd url-matching-tool
    ```
 
