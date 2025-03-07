@@ -12,8 +12,8 @@ A Streamlit-based tool to assist in matching URLs for website migration by using
   - AI-based GPT matching as a final fallback
 
 - **Integration with SEO data:**
-  - Cross-references data from Ahrefs and Google Search Console
-  - Prioritizes important URLs based on traffic, keywords, and impressions
+  - Cross-references data from Ahrefs and optionally Google Search Console
+  - Prioritizes important URLs based on traffic, keywords, and impressions (if available)
   - Generates priority scores to focus on high-value redirects
 
 - **User-friendly interface:**
@@ -53,9 +53,7 @@ The tool requires the following CSV files (compressed in a single ZIP file):
    - Current top keyword: Volume
    - Current top keyword: Position
 
-2. **impressions.csv** - Google Search Console data
-
-3. **old_vectors.csv** - Data for the old website URLs with columns:
+2. **old_vectors.csv** - Data for the old website URLs with columns:
    - Address
    - Status Code
    - Title 1
@@ -63,10 +61,13 @@ The tool requires the following CSV files (compressed in a single ZIP file):
    - H1-1
    - embeds 1 (vector embeddings)
 
-4. **new_vectors.csv** - Data for the new website URLs with columns:
+3. **new_vectors.csv** - Data for the new website URLs with columns:
    - Address
    - H1-1
    - embeds 1 (vector embeddings)
+
+4. **impressions.csv** (Optional) - Google Search Console data
+   - If not included, the tool will work without GSC data, adjusting its priority scoring algorithm accordingly
 
 ## 🚀 Usage
 
@@ -75,7 +76,7 @@ The tool requires the following CSV files (compressed in a single ZIP file):
    streamlit run main.py
    ```
 
-2. Upload a ZIP file containing all four required CSV files.
+2. Upload a ZIP file containing all required CSV files (impressions.csv is optional).
 
 3. Follow the step-by-step workflow in the application:
    - Processing data files
@@ -84,7 +85,7 @@ The tool requires the following CSV files (compressed in a single ZIP file):
    - Performing URL matching using various strategies
    - Setting similarity thresholds for fuzzy and H1 matching
    - Running AI-based matching for unmatched URLs
-   - Cross-checking with Ahrefs and Search Console data
+   - Cross-checking with Ahrefs and Search Console data (if available)
    - Reviewing and downloading results
 
 ## 🧠 Matching Process
@@ -107,7 +108,7 @@ The tool generates three downloadable CSV reports:
 
 Each URL is assigned a:
 - **Confidence Score** - How reliable the match is
-- **Priority Score** - Based on traffic, keywords, and impressions
+- **Priority Score** - Based on traffic, keywords, and impressions (if GSC data is available)
 
 ## ⚙️ Advanced Configuration
 

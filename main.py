@@ -38,14 +38,14 @@ This tool assists in matching URLs for website migration by comparing old and ne
 - H1 header matching
 - **AI-based GPT matching** (final fallback)
 
-It also cross-references data from Ahrefs and Google Search Console to prioritize important URLs for redirects.
+It also cross-references data from Ahrefs and optionally Google Search Console to prioritize important URLs for redirects.
 """)
 
 # Step 1: File Upload
 st.header("1. Upload a Zipped File Containing All Required CSVs")
 
 uploaded_zip = st.file_uploader(
-    "Upload a ZIP file containing top_pages.csv, impressions.csv, old_vectors.csv, and new_vectors.csv",
+    "Upload a ZIP file containing top_pages.csv, old_vectors.csv, new_vectors.csv (impressions.csv is optional)",
     type=["zip"]
 )
 
@@ -53,20 +53,29 @@ if uploaded_zip:
     with st.spinner("🔄 Processing the uploaded ZIP file..."):
         try:
             with zipfile.ZipFile(uploaded_zip) as z:
-                expected_files = ['top_pages.csv', 'impressions.csv', 'old_vectors.csv', 'new_vectors.csv']
+                required_files = ['top_pages.csv', 'old_vectors.csv', 'new_vectors.csv']
+                optional_files = ['impressions.csv']
                 zip_file_names = z.namelist()
                 
-                # Check for missing files
-                missing_files = [file for file in expected_files if file not in zip_file_names]
+                # Check for missing required files
+                missing_files = [file for file in required_files if file not in zip_file_names]
                 if missing_files:
                     st.error(f"❌ The following required CSV files are missing in the ZIP: {missing_files}")
                     st.stop()
                 
-                # Read CSVs
+                # Read required CSVs
                 top_pages = read_csv_from_zip(z, 'top_pages.csv')
-                impressions = read_csv_from_zip(z, 'impressions.csv')
                 old_vectors = read_csv_from_zip(z, 'old_vectors.csv')
                 new_vectors = read_csv_from_zip(z, 'new_vectors.csv')
+                
+                # Check for and read optional files
+                has_impressions = 'impressions.csv' in zip_file_names
+                if has_impressions:
+                    impressions = read_csv_from_zip(z, 'impressions.csv')
+                    st.info("✅ impressions.csv was found and loaded.")
+                else:
+                    impressions = pd.DataFrame(columns=['Top pages', 'Clicks', 'Impressions'])
+                    st.info("ℹ️ impressions.csv was not found. GSC data will not be included in priority scoring.")
             
             st.success("✅ All required CSV files have been successfully extracted and loaded.")
         except zipfile.BadZipFile:
@@ -110,13 +119,6 @@ if uploaded_zip:
         st.success("✅ top_pages.csv processed successfully.")
     except Exception as e:
         st.error(f"❌ Error processing top_pages.csv: {e}")
-        st.stop()
-    
-    try:
-        # Process impressions.csv (assuming no special processing)
-        st.success("✅ impressions.csv processed successfully.")
-    except Exception as e:
-        st.error(f"❌ Error processing impressions.csv: {e}")
         st.stop()
     
     try:
@@ -421,7 +423,10 @@ if uploaded_zip:
                     unmatched_df['Address_new'] = unmatched_df['Address_new'].str.lower().str.rstrip('/')
                 
                 top_pages['URL'] = top_pages['URL'].str.lower().str.rstrip('/')
-                impressions['Top pages'] = impressions['Top pages'].str.lower().str.rstrip('/')
+                
+                # Handle impressions data
+                if has_impressions:
+                    impressions['Top pages'] = impressions['Top pages'].str.lower().str.rstrip('/')
                 
                 # Merge old URLs with top_pages
                 if not matches_df.empty:
@@ -429,8 +434,13 @@ if uploaded_zip:
                     # Merge new URLs
                     matches_df = matches_df.merge(top_pages, left_on='Address_new', right_on='URL', how='left', suffixes=('', '_new'))
                     
-                    # Merge GSC impressions
-                    matches_df = matches_df.merge(impressions, left_on='Address_old', right_on='Top pages', how='left', suffixes=('', '_impressions'))
+                    # Merge GSC impressions if available
+                    if has_impressions:
+                        matches_df = matches_df.merge(impressions, left_on='Address_old', right_on='Top pages', how='left', suffixes=('', '_impressions'))
+                    else:
+                        # Add empty columns for GSC data
+                        matches_df['Clicks'] = 0
+                        matches_df['Impressions'] = 0
                     
                     # Handle numeric data
                     numeric_columns = ['Traffic','Traffic value','Keywords','Clicks','Impressions']
@@ -440,19 +450,32 @@ if uploaded_zip:
                         else:
                             matches_df[col] = 0
                     
-                    # Priority score
-                    matches_df['Priority_Score'] = (
-                        matches_df['Traffic'] * 0.4 +
-                        matches_df['Traffic value'] * 0.3 +
-                        matches_df['Keywords'] * 0.2 +
-                        matches_df['Impressions'] * 0.1
-                    )
+                    # Calculate priority score based on available data
+                    if has_impressions:
+                        matches_df['Priority_Score'] = (
+                            matches_df['Traffic'] * 0.4 +
+                            matches_df['Traffic value'] * 0.3 +
+                            matches_df['Keywords'] * 0.2 +
+                            matches_df['Impressions'] * 0.1
+                        )
+                    else:
+                        # Adjust weights if no impression data
+                        matches_df['Priority_Score'] = (
+                            matches_df['Traffic'] * 0.5 +
+                            matches_df['Traffic value'] * 0.3 +
+                            matches_df['Keywords'] * 0.2
+                        )
                     matches_df = matches_df.sort_values(by=['Priority_Score'], ascending=False).reset_index(drop=True)
                 
                 if not unmatched_df.empty:
                     unmatched_df = unmatched_df.merge(top_pages, left_on='Address_old', right_on='URL', how='left')
                     unmatched_df = unmatched_df.merge(top_pages, left_on='Address_new', right_on='URL', how='left', suffixes=('', '_new'))
-                    unmatched_df = unmatched_df.merge(impressions, left_on='Address_old', right_on='Top pages', how='left', suffixes=('', '_impressions'))
+                    
+                    if has_impressions:
+                        unmatched_df = unmatched_df.merge(impressions, left_on='Address_old', right_on='Top pages', how='left', suffixes=('', '_impressions'))
+                    else:
+                        unmatched_df['Clicks'] = 0
+                        unmatched_df['Impressions'] = 0
                     
                     numeric_columns = ['Traffic','Traffic value','Keywords','Clicks','Impressions']
                     for col in numeric_columns:
@@ -461,15 +484,25 @@ if uploaded_zip:
                         else:
                             unmatched_df[col] = 0
                     
-                    unmatched_df['Priority_Score'] = (
-                        unmatched_df['Traffic'] * 0.4 +
-                        unmatched_df['Traffic value'] * 0.3 +
-                        unmatched_df['Keywords'] * 0.2 +
-                        unmatched_df['Impressions'] * 0.1
-                    )
+                    if has_impressions:
+                        unmatched_df['Priority_Score'] = (
+                            unmatched_df['Traffic'] * 0.4 +
+                            unmatched_df['Traffic value'] * 0.3 +
+                            unmatched_df['Keywords'] * 0.2 +
+                            unmatched_df['Impressions'] * 0.1
+                        )
+                    else:
+                        unmatched_df['Priority_Score'] = (
+                            unmatched_df['Traffic'] * 0.5 +
+                            unmatched_df['Traffic value'] * 0.3 +
+                            unmatched_df['Keywords'] * 0.2
+                        )
                     unmatched_df = unmatched_df.sort_values(by=['Priority_Score'], ascending=False).reset_index(drop=True)
                 
-                st.success("✅ Cross-checking completed.")
+                if has_impressions:
+                    st.success("✅ Cross-checking with Ahrefs and GSC data completed.")
+                else:
+                    st.success("✅ Cross-checking with Ahrefs data completed. No GSC data was used.")
             except Exception as e:
                 st.error(f"❌ Error during cross-checking: {e}")
                 st.stop()
@@ -481,18 +514,21 @@ if uploaded_zip:
         
         matched_display_cols = [
             'Address_old','Address_new','Match_Type','Confidence_Score','Title_old','Meta Description_old','H1_old',
-            'Traffic','Traffic value','Keywords','Clicks','Impressions','Priority_Score'
+            'Traffic','Traffic value','Keywords'
         ]
+        
+        # Add impressions columns if they exist
+        if has_impressions:
+            matched_display_cols.extend(['Clicks', 'Impressions'])
+        
+        matched_display_cols.append('Priority_Score')
         
         if not matches_df.empty:
             display_matches_df = matches_df[matched_display_cols].fillna('N/A')
         else:
             display_matches_df = pd.DataFrame()
         
-        unmatched_display_cols = [
-            'Address_old','Address_new','Match_Type','Confidence_Score','Title_old','Meta Description_old','H1_old',
-            'Traffic','Traffic value','Keywords','Clicks','Impressions','Priority_Score'
-        ]
+        unmatched_display_cols = matched_display_cols.copy()  # Use the same columns as matched
         
         if not unmatched_df.empty:
             display_unmatched_df = unmatched_df[unmatched_display_cols].fillna('N/A')
@@ -585,7 +621,7 @@ if uploaded_zip:
         
         st.success("🎉 URL matching process completed successfully!")
 else:
-    st.info("🛠️ Please upload a ZIP file containing all four required CSV files to begin the URL matching process.")
+    st.info("🛠️ Please upload a ZIP file containing the required CSV files to begin the URL matching process.")
 
 st.markdown("---")
 st.markdown("© 2025 Calibre Nine | [GitHub Repository](https://github.com/chrisprideC9)")
